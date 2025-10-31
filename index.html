@@ -5,9 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>Calculadora de Bonos de Picking / 拣货奖金计算器</title>
 <meta name="theme-color" content="#2b6cb0"/>
-<link rel="manifest" href="/manifest.json" />
 <link rel="icon" href="/icons/icon-192.png" />
-<!-- 样式（蓝绿色主题，移动优先） -->
 <style>
   :root{
     --primary:#2b6cb0;
@@ -38,9 +36,12 @@
   .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;}
   .deleteBtn{background:var(--danger);color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer;}
   .calcOneBtn{background:#2b6cb0;color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer;}
+  .scanBtn{background:#38a169;color:white;border:none;padding:6px 8px;border-radius:8px;cursor:pointer;}
   footer{padding:12px;text-align:center;font-size:13px;color:var(--muted);}
   input, select, button { -webkit-tap-highlight-color: rgba(0,0,0,0.05); -webkit-appearance:none; }
   @media(min-width:720px){ .row{flex-wrap:nowrap;} .col{min-width:150px;} }
+  /* make number inputs comfortable on iOS */
+  input[type=number]::-webkit-outer-spin-button, input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 </style>
 </head>
 <body>
@@ -50,7 +51,6 @@
   </header>
 
   <main class="wrap">
-    <!-- controls -->
     <div class="controls" aria-hidden="false">
       <div>
         <label>周开始日期 / Fecha inicio de la semana</label>
@@ -66,30 +66,27 @@
       <div>
         <label>操作 / Acciones</label>
         <div style="display:flex;gap:8px;">
-          <button id="calcBtn">💰 计算全部奖金 / Calcular todos los bonos</button>
+          <button id="calcAllBtn">💰 计算全部奖金 / Calcular todos los bonos</button>
           <button id="exportBtn" class="secondary">📤 导出 Excel / Exportar Excel</button>
         </div>
       </div>
     </div>
 
-    <!-- cards container -->
-    <section id="cards" class="cards" aria-live="polite">
-      <!-- 页面会渲染员工卡片在这里 -->
-    </section>
+    <section id="cards" class="cards" aria-live="polite"></section>
 
-    <!-- summary -->
     <div id="summary" class="summary">
       <div id="summaryText">尚未计算 / No calculado</div>
     </div>
   </main>
 
-  <footer>支持离线使用 / Soporta uso sin conexión</footer>
+  <footer>支持扫码与手动输入箱数 · Compatible con escaneo y entrada manual de cajas · 支持离线使用 / Soporta uso sin conexión</footer>
 
   <!-- xlsx -->
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 
   <script defer>
-  const STORAGE_KEY = 'picking_bonos_v1';
+  // STORAGE KEY
+  const STORAGE_KEY = 'picking_bonos_v2'; // v2 includes scans
   let employees = [];
 
   const $ = sel => document.querySelector(sel);
@@ -108,14 +105,14 @@
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  // 渲染卡片
+  // render cards
   function render(){
     const container = $('#cards');
     container.innerHTML = '';
     if(employees.length === 0){
-      employees.push({ id: uid(), name:'', days:[0,0,0,0,0,0], noError:true, teamExtra:false });
+      employees.push({ id: uid(), name:'', days:[0,0,0,0,0,0], scans:[0,0,0,0,0,0], noError:true, teamExtra:false });
     }
-    employees.forEach(emp => {
+    employees.forEach((emp, empIndex) => {
       const div = document.createElement('div');
       div.className = 'card';
       div.innerHTML = `
@@ -133,12 +130,25 @@
           </div>
         </div>
 
-        <div style="margin-top:8px;color:var(--muted);font-weight:600;">每日拣货箱数（周一~周六） / Cajas por día (Lun~Sáb)</div>
+        <div style="margin-top:8px;color:var(--muted);font-weight:600;">每日手动输入箱数（周一~周六） / Cajas manuales (Lun~Sáb)</div>
         <div class="row" style="margin-top:6px;">
           ${[0,1,2,3,4,5].map(i => `
             <div class="col">
               <label class="small">第${i+1}天 / Día ${i+1}</label>
               <input type="number" class="emp-day" data-index="${i}" value="${emp.days[i]||0}" min="0" />
+            </div>
+          `).join('')}
+        </div>
+
+        <div style="margin-top:8px;color:var(--muted);font-weight:600;">扫描箱数（周一~周六） / Cajas escaneadas (Lun~Sáb)</div>
+        <div class="row" style="margin-top:6px;">
+          ${[0,1,2,3,4,5].map(i => `
+            <div class="col" style="display:flex;flex-direction:column;">
+              <label class="small">第${i+1}天 / Día ${i+1}</label>
+              <div style="display:flex;gap:6px;">
+                <input type="number" class="emp-scan" data-index="${i}" value="${emp.scans[i]||0}" min="0" />
+                <button class="scanBtn" data-index="${i}">+1 📦</button>
+              </div>
             </div>
           `).join('')}
         </div>
@@ -158,26 +168,36 @@
               <button class="deleteBtn">删除 / Eliminar</button>
             </div>
             <div style="margin-top:8px;color:var(--muted);font-size:14px;">
-              当前奖金 / Bono actual: <span class="emp-bono">$0.00</span>
+              基准奖金（手动输入部分） / Bono base: <span class="emp-bono">$0.00</span><br/>
+              扫描奖励 / Bono por escaneo: <span class="emp-scan-bono">$0.00</span><br/>
+              <strong>本周总计 / Total semanal: <span class="emp-total">$0.00</span></strong>
             </div>
           </div>
         </div>
       `;
       container.appendChild(div);
 
-      // 绑定事件
+      // bind events
       const nameEl = div.querySelector('.emp-name');
       const dayEls = div.querySelectorAll('.emp-day');
+      const scanEls = div.querySelectorAll('.emp-scan');
+      const scanBtns = div.querySelectorAll('.scanBtn');
       const noErrEl = div.querySelector('.emp-noerror');
       const teamExtraEl = div.querySelector('.emp-teamextra');
       const calcOne = div.querySelector('.calcOneBtn');
       const deleteBtn = div.querySelector('.deleteBtn');
       const bonoEl = div.querySelector('.emp-bono');
+      const scanBonoEl = div.querySelector('.emp-scan-bono');
+      const totalEl = div.querySelector('.emp-total');
 
+      // name
       nameEl.addEventListener('input', e => { emp.name = e.target.value; saveData(); });
+      // noError
       noErrEl.addEventListener('change', e => { emp.noError = e.target.value === 'true'; saveData(); });
+      // teamExtra
       teamExtraEl.addEventListener('change', e => { emp.teamExtra = e.target.value === 'true'; saveData(); });
 
+      // manual days
       dayEls.forEach(d => {
         d.addEventListener('input', e => {
           const idx = Number(e.target.dataset.index);
@@ -186,12 +206,36 @@
         });
       });
 
+      // scans input (editable) and +1 button
+      scanEls.forEach(s => {
+        s.addEventListener('input', e => {
+          const idx = Number(e.target.dataset.index);
+          emp.scans[idx] = Math.max(0, Number(e.target.value) || 0);
+          saveData();
+        });
+      });
+      scanBtns.forEach(b => {
+        b.addEventListener('click', e => {
+          const idx = Number(e.target.dataset.index);
+          emp.scans[idx] = (Number(emp.scans[idx]) || 0) + 1;
+          saveData();
+          render(); // re-render to update displayed values quickly
+        });
+      });
+
+      // calc one
       calcOne.addEventListener('click', () => {
-        const b = calcEmployeeBono(emp);
-        bonoEl.innerText = formatMoney(b);
+        const base = calcEmployeeBaseBono(emp);
+        const scanBono = calcEmployeeScanBono(emp);
+        const extra = (emp.noError?100:0) + (emp.teamExtra?150:0);
+        const total = Math.round((base + extra + scanBono) * 100) / 100;
+        bonoEl.innerText = formatMoney(base);
+        scanBonoEl.innerText = formatMoney(scanBono);
+        totalEl.innerText = formatMoney(total);
         updateSummary();
       });
 
+      // delete
       deleteBtn.addEventListener('click', () => {
         employees = employees.filter(x => x.id !== emp.id);
         saveData();
@@ -203,36 +247,50 @@
     updateSummary();
   }
 
-  function calcDailyBonus(cajas){
+  // calculations
+  function calcDailyBonusFromManual(cajas){
     let b = 0;
     if(cajas > 400 && cajas <= 500) b += (cajas - 400) * 0.10;
     else if(cajas > 500 && cajas <= 600) b += 100 * 0.10 + (cajas - 500) * 0.20;
     else if(cajas > 600) b += 100 * 0.10 + 100 * 0.20 + (cajas - 600) * 0.30;
     return b;
   }
-  function calcEmployeeBono(emp){
+  // base bonus (manual inputs summed across 6 days)
+  function calcEmployeeBaseBono(emp){
     let total = 0;
-    for(let d of emp.days) total += calcDailyBonus(d);
+    for(let d of emp.days) total += calcDailyBonusFromManual(Number(d)||0);
     if(emp.noError) total += 100;
     if(emp.teamExtra) total += 150;
     return Math.round(total*100)/100;
   }
+  // scan reward = sum(scans) * 0.1
+  function calcEmployeeScanBono(emp){
+    const totalScans = (emp.scans || [0,0,0,0,0,0]).reduce((s,x)=>s+Number(x||0),0);
+    return Math.round(totalScans * 0.1 * 100) / 100;
+  }
+
   function formatMoney(n){ return '$' + Number(n).toFixed(2); }
 
+  // summary update: calculates all employees and shows ranking + totals
   function updateSummary(){
     const summaryEl = $('#summaryText');
-    let total = 0;
+    let grandBase = 0;
+    let grandScan = 0;
     const rows = employees.map(emp => {
-      const b = calcEmployeeBono(emp);
-      total += b;
-      return { name: emp.name || 'Empleado', bono: b, avg: emp.days.reduce((s,x)=>s+x,0)/emp.days.length };
+      const base = calcEmployeeBaseBono(emp);
+      const scan = calcEmployeeScanBono(emp);
+      grandBase += base;
+      grandScan += scan;
+      return { name: emp.name || 'Empleado', base, scan, total: Math.round((base + scan)*100)/100 };
     });
-    rows.sort((a,b)=>b.bono - a.bono);
-    let txt = `总奖金 / Total general: ${formatMoney(total)}\n\n🏆 排名 / Ranking:\n`;
-    rows.forEach((r,i)=> txt += `${i+1}. ${r.name} — ${formatMoney(r.bono)} (平均 ${Math.round(r.avg*10)/10})\n`);
+    rows.sort((a,b)=>b.total - a.total);
+    let txt = `基准奖金总计 / Total bono base: ${formatMoney(Math.round(grandBase*100)/100)}\n扫描奖励总计 / Total bono por escaneo: ${formatMoney(Math.round(grandScan*100)/100)}\n\n🏆 排名 / Ranking:\n`;
+    rows.forEach((r,i)=> txt += `${i+1}. ${r.name} — ${formatMoney(r.total)}（基准 ${formatMoney(r.base)} + 扫描 ${formatMoney(r.scan)}）\n`);
+    txt += `\n💰 总奖金（含扫描奖励） / Total general: ${formatMoney(Math.round((grandBase+grandScan)*100)/100)}`;
     summaryEl.innerText = txt;
   }
 
+  // week display
   function updateWeekDisplay(){
     const inp = document.getElementById('weekStart');
     const range = document.getElementById('weekRange');
@@ -247,41 +305,81 @@
     }catch(e){ range.innerText = 'Semana: —'; }
   }
 
+  // export Excel
   function exportExcel(){
-    const data = employees.map(emp => ({
-      Empleado: emp.name || '',
-      Dia1: emp.days[0]||0, Dia2: emp.days[1]||0, Dia3: emp.days[2]||0,
-      Dia4: emp.days[3]||0, Dia5: emp.days[4]||0, Dia6: emp.days[5]||0,
-      SinErrores: emp.noError ? 'Sí' : 'No',
-      Equipo10: emp.teamExtra ? 'Sí' : 'No',
-      BonoSemanal: calcEmployeeBono(emp)
-    }));
-    const ws = XLSX.utils.json_to_sheet(data);
+    const arr = [];
+    employees.forEach(emp => {
+      const base = calcEmployeeBaseBono(emp);
+      const scan = calcEmployeeScanBono(emp);
+      const total = Math.round((base + scan)*100)/100;
+      arr.push({
+        Empleado: emp.name || '',
+        Dia1_manual: emp.days[0]||0, Dia2_manual: emp.days[1]||0, Dia3_manual: emp.days[2]||0,
+        Dia4_manual: emp.days[3]||0, Dia5_manual: emp.days[4]||0, Dia6_manual: emp.days[5]||0,
+        Dia1_scan: emp.scans[0]||0, Dia2_scan: emp.scans[1]||0, Dia3_scan: emp.scans[2]||0,
+        Dia4_scan: emp.scans[3]||0, Dia5_scan: emp.scans[4]||0, Dia6_scan: emp.scans[5]||0,
+        SinErrores: emp.noError ? 'Sí' : 'No',
+        Equipo10: emp.teamExtra ? 'Sí' : 'No',
+        Bono_base: base,
+        Bono_escaneo: scan,
+        Bono_total: total
+      });
+    });
+    const ws = XLSX.utils.json_to_sheet(arr);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Bonos');
     const week = document.getElementById('weekStart').value || '';
-    const filename = week ? `bonos_${week}.xlsx` : 'bonos_semana.xlsx';
+    const filename = week ? `bonos_${week}.xlsx` : 'bonos_semanales.xlsx';
     XLSX.writeFile(wb, filename);
   }
 
+  // init & bindings
   document.addEventListener('DOMContentLoaded', () => {
     const savedWeek = localStorage.getItem('picking_week') || '';
     if(savedWeek) $('#weekStart').value = savedWeek;
+    else {
+      // auto-calc current week's Monday (Mon..Sat)
+      const today = new Date();
+      const day = today.getDay(); // 0 Sun, 1 Mon...
+      const monday = new Date(today);
+      // compute Monday of current week (if today is Sunday day=0, take previous Monday)
+      const diff = (day === 0) ? -6 : (1 - day);
+      monday.setDate(today.getDate() + diff);
+      const iso = monday.toISOString().slice(0,10);
+      $('#weekStart').value = iso;
+      localStorage.setItem('picking_week', iso);
+    }
 
     loadData();
-    employees = employees.map(e => ({ id: e.id || uid(), name: e.name||'', days: (e.days && e.days.length===6) ? e.days : [0,0,0,0,0,0], noError: typeof e.noError === 'boolean' ? e.noError : true, teamExtra: !!e.teamExtra }));
+    // normalize employees data (ensure scans array exists)
+    employees = employees.map(e => ({
+      id: e.id || uid(),
+      name: e.name || '',
+      days: (e.days && e.days.length===6) ? e.days.map(x=>Number(x||0)) : [0,0,0,0,0,0],
+      scans: (e.scans && e.scans.length===6) ? e.scans.map(x=>Number(x||0)) : [0,0,0,0,0,0],
+      noError: typeof e.noError === 'boolean' ? e.noError : true,
+      teamExtra: !!e.teamExtra
+    }));
 
+    // bindings
     $('#addBtn').addEventListener('click', () => {
-      employees.push({ id: uid(), name:'', days:[0,0,0,0,0,0], noError:true, teamExtra:false });
+      employees.push({ id: uid(), name:'', days:[0,0,0,0,0,0], scans:[0,0,0,0,0,0], noError:true, teamExtra:false });
       saveData();
       render();
       setTimeout(()=>{ const last = document.querySelectorAll('.emp-name'); if(last.length) last[last.length-1].focus(); },120);
     });
-    $('#calcBtn').addEventListener('click', () => updateSummary());
+    $('#calcAllBtn').addEventListener('click', () => {
+      // for all employees, compute and update UI (renders show per-card values)
+      render();
+      updateSummary();
+    });
     $('#exportBtn').addEventListener('click', exportExcel);
     $('#weekStart').addEventListener('change', updateWeekDisplay);
 
-    try{ if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{}); }catch(e){}
+    // simple offline service worker registration (won't block)
+    if('serviceWorker' in navigator){
+      try{ navigator.serviceWorker.register('/sw.js').catch(()=>{}); }catch(e){}
+    }
 
     render();
   });
