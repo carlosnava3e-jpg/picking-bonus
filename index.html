@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>拣货奖金计算器 / Calculadora de Bonos</title>
+
+  <meta name="theme-color" content="#2b6cb0"/>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icons/icon-192.png" />
+
+  <!-- 简单样式，移动优先 -->
+  <style>
+    :root{
+      --primary:#2b6cb0;
+      --accent:#2b7a4b;
+      --muted:#6b7280;
+      --card-bg:#fff;
+      --bg:#f5f7fa;
+    }
+    html,body{height:100%;margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+    header{padding:14px 16px;background:var(--primary);color:white;display:flex;align-items:center;gap:12px;}
+    header h1{margin:0;font-size:16px;font-weight:600;}
+    .wrap{padding:12px;max-width:980px;margin:0 auto;}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+    .controls > *{flex:1 1 160px;min-width:120px;}
+    input[type="date"], input[type="text"], input[type="number"], select{
+      width:100%; padding:10px;border-radius:8px;border:1px solid #ddd; box-sizing:border-box;font-size:15px;
+    }
+    button{background:var(--accent);color:white;border:none;padding:10px 12px;border-radius:10px;font-weight:600;cursor:pointer;}
+    button.secondary{background:#6b7280;}
+    .cards{display:flex;flex-direction:column;gap:12px;}
+    .card{background:var(--card-bg);border-radius:12px;padding:12px;box-shadow:0 6px 18px rgba(15,23,42,0.06);}
+    .row{display:flex;gap:8px;flex-wrap:wrap;}
+    .col{flex:1 1 120px;min-width:110px;}
+    label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px;}
+    .summary{margin-top:12px;background:#eef2ff;padding:10px;border-radius:10px;font-size:14px;white-space:pre-line;}
+    .small{font-size:13px;color:var(--muted);}
+    .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;}
+    .deleteBtn{background:#e53e3e;}
+    footer{padding:12px;text-align:center;font-size:13px;color:var(--muted);}
+    /* make inputs easier to tap on iOS */
+    input, select, button { -webkit-tap-highlight-color: rgba(0,0,0,0.05); -webkit-appearance:none; }
+    @media(min-width:720px){ .row{flex-wrap:nowrap;} .col{min-width:150px;} }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="/icons/icon-96.png" alt="" width="36" height="36" style="border-radius:8px;background:white;padding:4px"/>
+    <h1>拣货奖金计算器 <small class="small">/ Calculadora de Bonos</small></h1>
+  </header>
+
+  <main class="wrap">
+    <!-- 周开始日期 -->
+    <div class="controls" aria-hidden="false">
+      <div>
+        <label>周开始日期 / Fecha inicio de la semana</label>
+        <input type="date" id="weekStart" />
+        <div class="small" id="weekRange" style="margin-top:6px">Semana: —</div>
+      </div>
+
+      <div>
+        <label>增加员工 / Agregar empleado</label>
+        <button id="addBtn">➕ 添加员工</button>
+      </div>
+
+      <div>
+        <label>操作 / Acciones</label>
+        <div style="display:flex;gap:8px;">
+          <button id="calcBtn">💰 计算奖金</button>
+          <button id="exportBtn" class="secondary">📤 导出 Excel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 卡片列表 -->
+    <section id="cards" class="cards" aria-live="polite"></section>
+
+    <!-- 统计 -->
+    <div id="summary" class="summary">
+      <div id="summaryText">尚未计算 / No calculado</div>
+    </div>
+  </main>
+
+  <footer>离线可用 · 支持安装到主屏幕 · Datos guardados localmente</footer>
+
+  <!-- 第三方依赖：xlsx -->
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
+  <script defer>
+  // ========== 数据模型 ==========
+  const STORAGE_KEY = 'picking_bonos_v1';
+  let employees = []; // 每位员工对象 {id,name,day1..day6, noError(bool), teamExtra(bool)}
+
+  // helpers
+  const $ = sel => document.querySelector(sel);
+  const uid = () => 'e' + Math.random().toString(36).slice(2,9);
+
+  // 初始化：读取缓存
+  function loadData(){
+    try{
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw) employees = JSON.parse(raw);
+      else employees = [];
+    }catch(e){ employees = []; }
+  }
+  function saveData(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(employees)); }
+
+  // UI：渲染每个员工卡片（卡片式，手机友好）
+  function render(){
+    const container = $('#cards');
+    container.innerHTML = '';
+    if(employees.length === 0) {
+      // 新用户给一行示例
+      employees.push({
+        id: uid(), name: '', days: [0,0,0,0,0,0], noError:true, teamExtra:false
+      });
+    }
+    employees.forEach(emp => {
+      const div = document.createElement('div');
+      div.className = 'card';
+      div.innerHTML = `
+        <div class="row" style="align-items:center;">
+          <div class="col" style="flex:1 1 45%;">
+            <label>姓名 / Nombre</label>
+            <input type="text" class="emp-name" value="${escapeHtml(emp.name)}" placeholder="例如: Juan / 小王">
+          </div>
+          <div class="col" style="min-width:120px;">
+            <label>无错误 / Sin errores</label>
+            <select class="emp-noerror">
+              <option value="true" ${emp.noError ? 'selected':''}>是 / Sí</option>
+              <option value="false" ${!emp.noError ? 'selected':''}>否 / No</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="margin-top:8px;color:var(--muted);font-weight:600;">每日拣货箱数（周一~周六）/ Cajas por día (Lun~Sáb)</div>
+        <div class="row" style="margin-top:6px;">
+          ${[0,1,2,3,4,5].map(i => `
+            <div class="col">
+              <label class="small">第${i+1}天 / Día ${i+1}</label>
+              <input type="number" class="emp-day" data-index="${i}" value="${emp.days[i]||0}" min="0" />
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="row" style="margin-top:8px;">
+          <div class="col">
+            <label>团队+10% 奖励 / Equipo +10%</label>
+            <select class="emp-teamextra">
+              <option value="false" ${!emp.teamExtra ? 'selected':''}>否 / No</option>
+              <option value="true" ${emp.teamExtra ? 'selected':''}>是 / Sí</option>
+            </select>
+          </div>
+
+          <div class="col" style="display:flex;flex-direction:column;justify-content:flex-end;">
+            <div style="display:flex;gap:8px;">
+              <button class="calcOneBtn">计算本周奖金</button>
+              <button class="deleteBtn" style="background:#e53e3e;color:white">删除</button>
+            </div>
+            <div style="margin-top:8px;color:var(--muted);font-size:14px;">
+              当前奖金 / Bono: <span class="emp-bono">$0.00</span>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // 绑定事件 AFTER 插入到 DOM（iOS 点击更稳定）
+      container.appendChild(div);
+
+      // references
+      const nameEl = div.querySelector('.emp-name');
+      const dayEls = div.querySelectorAll('.emp-day');
+      const noErrEl = div.querySelector('.emp-noerror');
+      const teamExtraEl = div.querySelector('.emp-teamextra');
+      const calcOne = div.querySelector('.calcOneBtn');
+      const deleteBtn = div.querySelector('.deleteBtn');
+      const bonoEl = div.querySelector('.emp-bono');
+
+      // sync from UI to model
+      nameEl.addEventListener('input', e => { emp.name = e.target.value; saveData(); });
+      noErrEl.addEventListener('change', e => { emp.noError = e.target.value === 'true'; saveData(); });
+      teamExtraEl.addEventListener('change', e => { emp.teamExtra = e.target.value === 'true'; saveData(); });
+
+      dayEls.forEach(d => {
+        d.addEventListener('input', e => {
+          const idx = Number(e.target.dataset.index);
+          emp.days[idx] = Number(e.target.value) || 0;
+          saveData();
+        });
+      });
+
+      calcOne.addEventListener('click', () => {
+        const b = calcEmployeeBono(emp);
+        bonoEl.innerText = formatMoney(b);
+        updateSummary(); // update global
+      });
+
+      deleteBtn.addEventListener('click', () => {
+        employees = employees.filter(x => x.id !== emp.id);
+        saveData();
+        render();
+      });
+    });
+
+    updateWeekDisplay();
+    updateSummary();
+  }
+
+  // 计算单个员工本周奖金（规则：每日按阶梯计算再求和；周内无错误 +100；团队+10% +150）
+  function calcEmployeeBono(emp){
+    let total = 0;
+    for(let d of emp.days){
+      total += calcDailyBonus(d);
+    }
+    if(emp.noError) total += 100;
+    if(emp.teamExtra) total += 150;
+    return Math.round(total*100)/100;
+  }
+
+  function calcDailyBonus(cajas){
+    let b = 0;
+    if(cajas > 400 && cajas <= 500) b += (cajas - 400) * 0.10;
+    else if(cajas > 500 && cajas <= 600) b += 100 * 0.10 + (cajas - 500) * 0.20;
+    else if(cajas > 600) b += 100 * 0.10 + 100 * 0.20 + (cajas - 600) * 0.30;
+    return b;
+  }
+
+  function formatMoney(n){ return '$' + Number(n).toFixed(2); }
+
+  // 计算并显示总表与排名
+  function updateSummary(){
+    const summaryEl = $('#summaryText') || document.getElementById('summaryText');
+    let total = 0;
+    const rows = employees.map(emp => {
+      const b = calcEmployeeBono(emp);
+      total += b;
+      return { name: emp.name || 'Empleado', bono: b, avg: emp.days.reduce((s,x)=>s+x,0)/emp.days.length };
+    });
+    rows.sort((a,b)=>b.bono - a.bono);
+
+    let txt = `总奖金 / Total general: ${formatMoney(total)}\n\n🏆 排名 / Ranking:\n`;
+    rows.forEach((r,i)=> txt += `${i+1}. ${r.name} — ${formatMoney(r.bono)} (平均 ${Math.round(r.avg*10)/10})\n`);
+    summaryEl.innerText = txt;
+  }
+
+  // 周开始/结束显示
+  function updateWeekDisplay(){
+    const inp = document.getElementById('weekStart');
+    const range = document.getElementById('weekRange');
+    const dstr = inp.value;
+    if(!dstr){ range.innerText = 'Semana: —'; return; }
+    try{
+      const start = new Date(dstr);
+      const end = new Date(start);
+      end.setDate(start.getDate() + 5); // Mon ~ Sat
+      range.innerText = `Semana: ${start.toISOString().slice(0,10)} ~ ${end.toISOString().slice(0,10)}`;
+      // save chosen week to localStorage
+      localStorage.setItem('picking_week', dstr);
+    }catch(e){ range.innerText = 'Semana: —'; }
+  }
+
+  // 导出 Excel（xlsx）
+  function exportExcel(){
+    // build table
+    const data = employees.map(emp => {
+      return {
+        Empleado: emp.name || '',
+        Dia1: emp.days[0]||0, Dia2: emp.days[1]||0, Dia3: emp.days[2]||0,
+        Dia4: emp.days[3]||0, Dia5: emp.days[4]||0, Dia6: emp.days[5]||0,
+        SinErrores: emp.noError ? 'Sí' : 'No',
+        Equipo10: emp.teamExtra ? 'Sí' : 'No',
+        BonoSemanal: calcEmployeeBono(emp)
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Bonos');
+    const week = document.getElementById('weekStart').value || '';
+    const filename = week ? `bonos_${week}.xlsx` : 'bonos_semana.xlsx';
+    XLSX.writeFile(wb, filename);
+  }
+
+  // XSS helper for values into HTML attributes
+  function escapeHtml(s = '') {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // 绑定顶层按钮 & lifecycle
+  document.addEventListener('DOMContentLoaded', () => {
+    // load existing week
+    const savedWeek = localStorage.getItem('picking_week') || '';
+    if(savedWeek) $('#weekStart').value = savedWeek;
+
+    // load data
+    loadData();
+
+    // ensure each employee has days array length 6
+    employees = employees.map(e => ({ id: e.id || uid(), name: e.name||'', days: (e.days && e.days.length===6) ? e.days : [0,0,0,0,0,0], noError: typeof e.noError === 'boolean' ? e.noError : true, teamExtra: !!e.teamExtra }));
+
+    // bind buttons
+    $('#addBtn').addEventListener('click', () => {
+      employees.push({ id: uid(), name:'', days:[0,0,0,0,0,0], noError:true, teamExtra:false });
+      saveData();
+      render();
+      // focus last name input (improve UX)
+      setTimeout(()=>{ const last = document.querySelectorAll('.emp-name'); if(last.length) last[last.length-1].focus(); },100);
+    });
+    $('#calcBtn').addEventListener('click', () => updateSummary());
+    $('#exportBtn').addEventListener('click', exportExcel);
+    $('#weekStart').addEventListener('change', updateWeekDisplay);
+
+    // register service worker for offline (if available)
+    if('serviceWorker' in navigator){
+      try{ navigator.serviceWorker.register('/sw.js'); }catch(e){}
+    }
+
+    render();
+  });
+
+  // Expose render for service worker or testing
+  window._renderPicking = render;
+  </script>
+</body>
+</html>
